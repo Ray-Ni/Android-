@@ -378,4 +378,125 @@ layoutChunk函数主要做了四件事：
         }
 ```
 这里先忽略从ScrapList获得View的可能性，直接通过recycler.getViewForPosition来获得新的View
-3.1
+
+3.1 Recycler.getViewForPosition
+```js
+       /**
+         * Obtain a view initialized for the given position.
+         *
+         * This method should be used by {@link LayoutManager} implementations to obtain
+         * views to represent data from an {@link Adapter}.
+         * <p>
+         * The Recycler may reuse a scrap or detached view from a shared pool if one is
+         * available for the correct view type. If the adapter has not indicated that the
+         * data at the given position has changed, the Recycler will attempt to hand back
+         * a scrap view that was previously initialized for that data without rebinding.
+         *
+         * @param position Position to obtain a view for
+         * @return A view representing the data at <code>position</code> from <code>adapter</code>
+         */
+        public View getViewForPosition(int position) {
+            return getViewForPosition(position, false);
+        }
+```
+3.2 Recycler.getViewForPosition
+```js
+        View getViewForPosition(int position, boolean dryRun) {
+            if (position < 0 || position >= mState.getItemCount()) {
+                throw new IndexOutOfBoundsException("Invalid item position " + position
+                        + "(" + position + "). Item count:" + mState.getItemCount());
+            }
+            boolean fromScrap = false;
+            ViewHolder holder = null;
+            // 0) If there is a changed scrap, try to find from there
+            if (mState.isPreLayout()) {
+                holder = getChangedScrapViewForPosition(position);
+                fromScrap = holder != null;
+            }
+            // 1) Find from scrap by position
+            if (holder == null) {
+                holder = getScrapViewForPosition(position, INVALID_TYPE, dryRun);
+                ......
+            }
+            if (holder == null) {
+                final int offsetPosition = mAdapterHelper.findPositionOffset(position);
+                ......
+
+                final int type = mAdapter.getItemViewType(offsetPosition);
+                // 2) Find from scrap via stable ids, if exists
+                if (mAdapter.hasStableIds()) {
+                    holder = getScrapViewForId(mAdapter.getItemId(offsetPosition), type, dryRun);
+                    ......
+                }
+                if (holder == null && mViewCacheExtension != null) {
+                    // We are NOT sending the offsetPosition because LayoutManager does not
+                    // know it.
+                    final View view = mViewCacheExtension
+                            .getViewForPositionAndType(this, position, type);
+                    if (view != null) {
+                        holder = getChildViewHolder(view);
+                        ......
+                    }
+                }
+                if (holder == null) { // fallback to recycler
+                    // try recycler.
+                    // Head to the shared pool.
+                    holder = getRecycledViewPool().getRecycledView(type);
+                    ......
+                }
+                if (holder == null) {
+                    holder = mAdapter.createViewHolder(RecyclerView.this, type);
+                }
+            }
+
+            // This is very ugly but the only place we can grab this information
+            // before the View is rebound and returned to the LayoutManager for post layout ops.
+            // We don't need this in pre-layout since the VH is not updated by the LM.
+            if (fromScrap && !mState.isPreLayout() && holder
+                    .hasAnyOfTheFlags(ViewHolder.FLAG_BOUNCED_FROM_HIDDEN_LIST)) {
+                holder.setFlags(0, ViewHolder.FLAG_BOUNCED_FROM_HIDDEN_LIST);
+                if (mState.mRunSimpleAnimations) {
+                    int changeFlags = ItemAnimator
+                            .buildAdapterChangeFlagsForAnimations(holder);
+                    changeFlags |= ItemAnimator.FLAG_APPEARED_IN_PRE_LAYOUT;
+                    final ItemHolderInfo info = mItemAnimator.recordPreLayoutInformation(mState,
+                            holder, changeFlags, holder.getUnmodifiedPayloads());
+                    recordAnimationInfoIfBouncedHiddenView(holder, info);
+                }
+            }
+
+            boolean bound = false;
+            if (mState.isPreLayout() && holder.isBound()) {
+                // do not update unless we absolutely have to.
+                holder.mPreLayoutPosition = position;
+            } else if (!holder.isBound() || holder.needsUpdate() || holder.isInvalid()) {
+                if (DEBUG && holder.isRemoved()) {
+                    throw new IllegalStateException("Removed holder should be bound and it should"
+                            + " come here only in pre-layout. Holder: " + holder);
+                }
+                final int offsetPosition = mAdapterHelper.findPositionOffset(position);
+                holder.mOwnerRecyclerView = RecyclerView.this;
+                mAdapter.bindViewHolder(holder, offsetPosition);
+                attachAccessibilityDelegate(holder.itemView);
+                bound = true;
+                if (mState.isPreLayout()) {
+                    holder.mPreLayoutPosition = position;
+                }
+            }
+
+            final ViewGroup.LayoutParams lp = holder.itemView.getLayoutParams();
+            final LayoutParams rvLayoutParams;
+            if (lp == null) {
+                rvLayoutParams = (LayoutParams) generateDefaultLayoutParams();
+                holder.itemView.setLayoutParams(rvLayoutParams);
+            } else if (!checkLayoutParams(lp)) {
+                rvLayoutParams = (LayoutParams) generateLayoutParams(lp);
+                holder.itemView.setLayoutParams(rvLayoutParams);
+            } else {
+                rvLayoutParams = (LayoutParams) lp;
+            }
+            rvLayoutParams.mViewHolder = holder;
+            rvLayoutParams.mPendingInvalidate = fromScrap && bound;
+            return holder.itemView;
+```
+

@@ -449,21 +449,7 @@ layoutChunk函数主要做了四件事：
                 }
             }
 
-            // This is very ugly but the only place we can grab this information
-            // before the View is rebound and returned to the LayoutManager for post layout ops.
-            // We don't need this in pre-layout since the VH is not updated by the LM.
-            if (fromScrap && !mState.isPreLayout() && holder
-                    .hasAnyOfTheFlags(ViewHolder.FLAG_BOUNCED_FROM_HIDDEN_LIST)) {
-                holder.setFlags(0, ViewHolder.FLAG_BOUNCED_FROM_HIDDEN_LIST);
-                if (mState.mRunSimpleAnimations) {
-                    int changeFlags = ItemAnimator
-                            .buildAdapterChangeFlagsForAnimations(holder);
-                    changeFlags |= ItemAnimator.FLAG_APPEARED_IN_PRE_LAYOUT;
-                    final ItemHolderInfo info = mItemAnimator.recordPreLayoutInformation(mState,
-                            holder, changeFlags, holder.getUnmodifiedPayloads());
-                    recordAnimationInfoIfBouncedHiddenView(holder, info);
-                }
-            }
+            ......
 
             boolean bound = false;
             if (mState.isPreLayout() && holder.isBound()) {
@@ -498,5 +484,23 @@ layoutChunk函数主要做了四件事：
             rvLayoutParams.mViewHolder = holder;
             rvLayoutParams.mPendingInvalidate = fromScrap && bound;
             return holder.itemView;
+```
+这个函数是Recycler的核心函数，主要完成了两件工作：
+1.根据缓存的优先级，获取ViewHolder实例
+2. rebind view holder & 设置layoutParameter
+
+具体来说，Recycler中的缓存优先级为：
+1. changed scrap
+2. Scrap view
+3. ViewCacheExtension
+4. RecycledViewPool
+5. adapter(adater不是缓存，而是构造ViewHolder实例
+
+4.0 LinearLayoutManager.addView
+```js
+```
+
+4.1 LinearLayoutManager.addViewInt
+```js
 ```
 

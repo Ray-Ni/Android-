@@ -494,13 +494,215 @@ layoutChunk函数主要做了四件事：
 2. Scrap view
 3. ViewCacheExtension
 4. RecycledViewPool
-5. adapter(adater不是缓存，而是构造ViewHolder实例
+5. adapter(adater不是缓存，而是通过adater.createViewHolder函数构造ViewHolder实例)
 
 4.0 LinearLayoutManager.addView
 ```js
+        public void addView(View child) {
+            addView(child, -1);
+        }
+
+        public void addView(View child, int index) {
+            addViewInt(child, index, false);
+        }
 ```
 
 4.1 LinearLayoutManager.addViewInt
 ```js
+private void addViewInt(View child, int index, boolean disappearing) {
+            final ViewHolder holder = getChildViewHolderInt(child);
+            ......
+            final LayoutParams lp = (LayoutParams) child.getLayoutParams();
+            if (holder.wasReturnedFromScrap() || holder.isScrap()) {
+                if (holder.isScrap()) {
+                    holder.unScrap();
+                } else {
+                    holder.clearReturnedFromScrapFlag();
+                }
+                mChildHelper.attachViewToParent(child, index, child.getLayoutParams(), false);
+                if (DISPATCH_TEMP_DETACH) {
+                    ViewCompat.dispatchFinishTemporaryDetach(child);
+                }
+            } else if (child.getParent() == mRecyclerView) { // it was not a scrap but a valid child
+                // ensure in correct position
+                int currentIndex = mChildHelper.indexOfChild(child);
+                if (index == -1) {
+                    index = mChildHelper.getChildCount();
+                }
+                ......
+                if (currentIndex != index) {
+                    mRecyclerView.mLayout.moveView(currentIndex, index);
+                }
+            } else {
+                mChildHelper.addView(child, index, false);
+                lp.mInsetsDirty = true;
+                if (mSmoothScroller != null && mSmoothScroller.isRunning()) {
+                    mSmoothScroller.onChildAttachedToWindow(child);
+                }
+            }
+            ......
+        }
 ```
+根据View的状态不同,添加到RecyclerView的方式也有差异：
+1. 如果View当前为detached，attach 到 RecyclerView
+2. 如果View当前还在RecyclerView中，则是移动View的位置
+3. 初次之外，添加到RecyclerView中
+
+5.0 LinearLayoutManager.measureChildWithMargins
+```js
+       public void measureChildWithMargins(View child, int widthUsed, int heightUsed) {
+            final LayoutParams lp = (LayoutParams) child.getLayoutParams();
+
+            final Rect insets = mRecyclerView.getItemDecorInsetsForChild(child);
+            widthUsed += insets.left + insets.right;
+            heightUsed += insets.top + insets.bottom;
+
+            final int widthSpec = getChildMeasureSpec(getWidth(),
+                    getPaddingLeft() + getPaddingRight() +
+                            lp.leftMargin + lp.rightMargin + widthUsed, lp.width,
+                    canScrollHorizontally());
+            final int heightSpec = getChildMeasureSpec(getHeight(),
+                    getPaddingTop() + getPaddingBottom() +
+                            lp.topMargin + lp.bottomMargin + heightUsed, lp.height,
+                    canScrollVertically());
+            child.measure(widthSpec, heightSpec);
+        }
+```
+调用measure函数，重新计算child的长和宽。
+值得关注的是mRecyclerView.getItemDecorInsetsForChild
+
+5.1 RecyclerView.getItemDecoinsetsForChild
+```js
+Rect getItemDecorInsetsForChild(View child) {
+        final LayoutParams lp = (LayoutParams) child.getLayoutParams();
+        if (!lp.mInsetsDirty) {
+            return lp.mDecorInsets;
+        }
+
+        final Rect insets = lp.mDecorInsets;
+        insets.set(0, 0, 0, 0);
+        final int decorCount = mItemDecorations.size();
+        for (int i = 0; i < decorCount; i++) {
+            mTempRect.set(0, 0, 0, 0);
+            mItemDecorations.get(i).getItemOffsets(mTempRect, child, this, mState);
+            insets.left += mTempRect.left;
+            insets.top += mTempRect.top;
+            insets.right += mTempRect.right;
+            insets.bottom += mTempRect.bottom;
+        }
+        lp.mInsetsDirty = false;
+        return insets;
+    }
+```
+这里就是ItemDecoration起作用的地方了
+
+6.0 LinearLayoutManager.layoutDecorated
+```js
+        public void layoutDecorated(View child, int left, int top, int right, int bottom) {
+            final Rect insets = ((LayoutParams) child.getLayoutParams()).mDecorInsets;
+            child.layout(left + insets.left, top + insets.top, right - insets.right,
+                    bottom - insets.bottom);
+        }
+```
+调用layout函数，重新layout child
+
+回到2.1 scrollBy函数，接下来调用的是OrientationHelper.offsetChildren函数
+
+7.0 OrientationHelper.offsetChildren
+```js
+public static OrientationHelper createVerticalHelper(RecyclerView.LayoutManager layoutManager) {
+        return new OrientationHelper(layoutManager) {
+            @Override
+            public void offsetChildren(int amount) {
+                mLayoutManager.offsetChildrenVertical(amount);
+            }
+        ......
+    }
+```
+直接看VerticalHelper的实现，调用LayoutManager自身的函数
+
+7.1 LayoutManager.offsetChildrenVertical
+```js
+        /**
+         * Offset all child views attached to the parent RecyclerView by dy pixels along
+         * the vertical axis.
+         *
+         * @param dy Pixels to offset by
+         */
+        public void offsetChildrenVertical(int dy) {
+            if (mRecyclerView != null) {
+                mRecyclerView.offsetChildrenVertical(dy);
+            }
+        }
+```
+7.2 RecyclerView.offsetChildrenVertical
+```js
+    public void offsetChildrenVertical(int dy) {
+        final int childCount = mChildHelper.getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            mChildHelper.getChildAt(i).offsetTopAndBottom(dy);
+        }
+    }
+```
+最终通过offsetTopAndBottom函数来设置每一个child的top和bottom，这个实现和ListView如出一辙。
+
+7.3 View.offsetTopAndBottom
+```js
+public void offsetTopAndBottom(int offset) {
+        if (offset != 0) {
+            final boolean matrixIsIdentity = hasIdentityMatrix();
+            if (matrixIsIdentity) {
+                if (isHardwareAccelerated()) {
+                    invalidateViewProperty(false, false);
+                } else {
+                    final ViewParent p = mParent;
+                    if (p != null && mAttachInfo != null) {
+                        final Rect r = mAttachInfo.mTmpInvalRect;
+                        int minTop;
+                        int maxBottom;
+                        int yLoc;
+                        if (offset < 0) {
+                            minTop = mTop + offset;
+                            maxBottom = mBottom;
+                            yLoc = offset;
+                        } else {
+                            minTop = mTop;
+                            maxBottom = mBottom + offset;
+                            yLoc = 0;
+                        }
+                        r.set(0, yLoc, mRight - mLeft, maxBottom - minTop);
+                        p.invalidateChild(this, r);
+                    }
+                }
+            } else {
+                invalidateViewProperty(false, false);
+            }
+
+            mTop += offset;
+            mBottom += offset;
+            mRenderNode.offsetTopAndBottom(offset);
+            if (isHardwareAccelerated()) {
+                invalidateViewProperty(false, false);
+                invalidateParentIfNeededAndWasQuickRejected();
+            } else {
+                if (!matrixIsIdentity) {
+                    invalidateViewProperty(false, true);
+                }
+                invalidateParentIfNeeded();
+            }
+            notifySubtreeAccessibilityStateChangedIfNeeded();
+        }
+    }
+```
+## 总结
+
+RecyclerView整体来说，还是和ListView比较相似的（屁话，他们的需求接近）
+
+RecyclerView最大的两个特色：
+1. 更高程度的解耦，方便灵活的组合和扩展
+2. Recycler相较于ListView更加复杂的缓存机制，可以带来更高的View复用性能
+3. 细节实现更加出色，对于API detachViewFromParent & attachViewToParent的使用，有助于提高性能
+
+
+
 
